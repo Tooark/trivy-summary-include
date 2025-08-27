@@ -1,0 +1,27 @@
+spec:
+  inputs:
+    docker-image:
+      description: "Docker image name"
+      type: string
+---
+
+stages:
+- scan
+
+variables:
+  TRIVY_JSON: "gl-container-scanning-report.json"
+
+include:
+- template: Jobs/Container-Scanning.gitlab-ci.yml
+
+container_scanning:
+  stage: scan
+  variables:
+    CS_IMAGE: $[[inputs.docker-image]]
+  artifacts:
+    paths:
+    - $TRIVY_JSON
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
