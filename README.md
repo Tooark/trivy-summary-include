@@ -9,3 +9,7 @@ This Gitlab include generates a summary report from a Docker image scan using [T
 ## 🚀 How to Use
 
 ```yaml
+include:
+- remote: 'https://raw.githubusercontent.com/Tooark/trivy-summary-include/main/.gitlab-ci.yml'
+  inputs:
+    docker-image: nginx:latest
