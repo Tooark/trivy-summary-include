@@ -15,6 +15,7 @@ include:
 - template: Jobs/Container-Scanning.gitlab-ci.yml
 
 container_scanning:
+  image: docker:latest
   stage: scan
   variables:
     CS_IMAGE: $[[inputs.docker-image]]
