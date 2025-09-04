@@ -3,6 +3,10 @@ spec:
     docker-image:
       description: "Docker image name"
       type: string
+    architecture:
+      description: "Architecture (amd64 or arm64)"
+      type: string
+      default: ""
 ---
 
 stages:
@@ -13,12 +17,14 @@ variables:
   TRIVY_IMAGE: public.ecr.aws/n6a9k4a7/deploy:1-trivy
 
 docker_scan:
+  rules:
+  - if: '"$[[ inputs.architecture | expand_vars ]]" == ""'
   stage: scan
   image: $TRIVY_IMAGE
   variables:
     DOCKER_IMAGE: $[[inputs.docker-image]]
   script:
-  - trivy image --format json --output $TRIVY_JSON $DOCKER_IMAGE
+  - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
   artifacts:
     paths:
     - $TRIVY_JSON
@@ -28,12 +34,14 @@ docker_scan:
     expire_in: "30 days"
 
 docker_scan_amd64:
+  rules:
+  - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"'
   stage: scan
   image: aquasec/trivy:latest
   variables:
     DOCKER_IMAGE: $[[inputs.docker-image]]
   script:
-  - trivy image --format json --output $TRIVY_JSON $DOCKER_IMAGE
+  - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
   artifacts:
     paths:
     - $TRIVY_JSON
