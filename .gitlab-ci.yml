@@ -10,18 +10,36 @@ stages:
 
 variables:
   TRIVY_JSON: "gl-container-scanning-report.json"
+  TRIVY_IMAGE: public.ecr.aws/n6a9k4a7/deploy:1-trivy
 
-include:
-- template: Jobs/Container-Scanning.gitlab-ci.yml
-
-container_scanning:
+docker_scan:
   stage: scan
+  image: $TRIVY_IMAGE
   variables:
-    CS_IMAGE: $[[inputs.docker-image]]
+    DOCKER_IMAGE: $[[inputs.docker-image]]
+  script:
+  - trivy image --format json --output $TRIVY_JSON $DOCKER_IMAGE
   artifacts:
     paths:
     - $TRIVY_JSON
     untracked: false
     when: on_success
-    access: all
+    access: developer
     expire_in: "30 days"
+
+docker_scan_amd64:
+  stage: scan
+  image: aquasec/trivy:latest
+  variables:
+    DOCKER_IMAGE: $[[inputs.docker-image]]
+  script:
+  - trivy image --format json --output $TRIVY_JSON $DOCKER_IMAGE
+  artifacts:
+    paths:
+    - $TRIVY_JSON
+    untracked: false
+    when: on_success
+    access: developer
+    expire_in: "30 days"
+  tags:
+  - amd64
