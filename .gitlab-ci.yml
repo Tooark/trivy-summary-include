@@ -18,6 +18,9 @@ variables:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == ""'
   stage: scan
   image: $TRIVY_IMAGE
+  before_script:
+  - apk add --no-cache jq
+  - apk add --no-cache docker
   script:
   - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
   after_script:
@@ -49,6 +52,9 @@ variables:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"'
   stage: scan
   image: aquasec/trivy:latest
+  before_script:
+  - apk add --no-cache jq
+  - apk add --no-cache docker
   script:
   - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
   after_script:
