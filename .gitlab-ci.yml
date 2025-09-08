@@ -20,13 +20,29 @@ variables:
   image: $TRIVY_IMAGE
   script:
   - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
+  after_script:
+  - |
+    critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
+    high=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")] | length' $TRIVY_JSON)
+    medium=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' $TRIVY_JSON)
+    low=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="LOW")] | length' $TRIVY_JSON)
+    unknown=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="UNKNOWN")] | length' $TRIVY_JSON)
+    total=$((critical + high + medium + low + unknown))
+    echo "CRITICAL_COUNT=$critical" >> variables.env
+    echo "HIGH_COUNT=$high" >> variables.env
+    echo "MEDIUM_COUNT=$medium" >> variables.env
+    echo "LOW_COUNT=$low" >> variables.env
+    echo "UNKNOWN_COUNT=$unknown" >> variables.env
+    echo "TOTAL_COUNT=$total" >> variables.env
   artifacts:
     paths:
     - $TRIVY_JSON
+    reports:
+      dotenv: variables.env
     untracked: false
     when: on_success
     access: developer
-    expire_in: "30 days"
+    expire_in: "1 day"
 
 .docker_scan_amd64:
   rules:
@@ -35,12 +51,28 @@ variables:
   image: aquasec/trivy:latest
   script:
   - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
+  after_script:
+  - |
+    critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
+    high=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")] | length' $TRIVY_JSON)
+    medium=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' $TRIVY_JSON)
+    low=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="LOW")] | length' $TRIVY_JSON)
+    unknown=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="UNKNOWN")] | length' $TRIVY_JSON)
+    total=$((critical + high + medium + low + unknown))
+    echo "CRITICAL_COUNT=$critical" >> variables.env
+    echo "HIGH_COUNT=$high" >> variables.env
+    echo "MEDIUM_COUNT=$medium" >> variables.env
+    echo "LOW_COUNT=$low" >> variables.env
+    echo "UNKNOWN_COUNT=$unknown" >> variables.env
+    echo "TOTAL_COUNT=$total" >> variables.env
   artifacts:
     paths:
     - $TRIVY_JSON
+    reports:
+      dotenv: variables.env
     untracked: false
     when: on_success
     access: developer
-    expire_in: "30 days"
+    expire_in: "1 day"
   tags:
   - amd64
