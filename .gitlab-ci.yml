@@ -22,7 +22,7 @@ variables:
   - apk add --no-cache jq
   - apk add --no-cache docker
   script:
-  - trivy image $DOCKER_IMAGE | tee $TRIVY_JSON
+  - trivy image "$DOCKER_IMAGE" | tee $TRIVY_JSON
   after_script:
   - |
     critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
