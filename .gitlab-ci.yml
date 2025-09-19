@@ -25,7 +25,8 @@ variables:
   - apk add --no-cache jq
   - apk add --no-cache docker
   script:
-  - trivy image -f json "$[[inputs.docker-image]]" | tee $TRIVY_JSON | jq .
+  - trivy image "$[[inputs.docker-image]]"
+  - trivy image -f json "$[[inputs.docker-image]]" | tee $TRIVY_JSON > /dev/null | jq . > /dev/null
   after_script:
   - |
     critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
@@ -59,7 +60,8 @@ variables:
   - apk add --no-cache jq
   - apk add --no-cache docker
   script:
-  - trivy image -f json "$[[inputs.docker-image]]" | tee $TRIVY_JSON | jq .
+  - trivy image "$[[inputs.docker-image]]"
+  - trivy image -f json "$[[inputs.docker-image]]" | tee $TRIVY_JSON > /dev/null | jq . > /dev/null
   after_script:
   - |
     critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
