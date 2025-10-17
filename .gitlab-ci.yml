@@ -16,7 +16,18 @@ variables:
   TRIVY_JSON: "gl-container-scanning-report.json"
   TRIVY_IMAGE: public.ecr.aws/n6a9k4a7/deploy:1-trivy
 
+.retry: &retry
+  retry:
+    max: 2
+    when:
+    - runner_system_failure
+    - stuck_or_timeout_failure
+    - api_failure
+    - job_execution_timeout
+    - scheduler_failure
+
 .docker_scan:
+  <<: *retry
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == ""'
   stage: scan
@@ -52,6 +63,7 @@ variables:
     expire_in: "1 day"
 
 .docker_scan_amd64:
+  <<: *retry
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"'
   stage: scan
