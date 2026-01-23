@@ -38,7 +38,7 @@ variables:
 .docker_scan:
   <<: *retry
   rules:
-  - if: '"$[[ inputs.architecture | expand_vars ]]" == "" || "$[[ inputs.trivy-activated | expand_vars ]]" == "true"'
+  - if: '"$[[ inputs.architecture | expand_vars ]]" == "" || "$[[ inputs.trivy-activated ]]" == "true"'
   stage: $[[inputs.stage]]
   image: $TRIVY_IMAGE
   before_script:
@@ -74,7 +74,7 @@ variables:
 .docker_scan_amd64:
   <<: *retry
   rules:
-  - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"  || "$[[ inputs.trivy-activated | expand_vars ]]" == "true"'
+  - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"  || "$[[ inputs.trivy-activated ]]" == "true"'
   stage: $[[inputs.stage]]
   image: aquasec/trivy:latest
   before_script:
