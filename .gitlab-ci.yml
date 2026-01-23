@@ -1,5 +1,14 @@
 spec:
   inputs:
+    trivy-activated:
+      description: "Activate Trivy scan"
+      type: boolean
+      default: true
+    stage:
+      description: "Stage to run"
+      type: string
+      #Modificar para sca(software composition analysis) futuramente com Sourcegraph
+      default: scan
     docker-image:
       description: "Docker image name"
       type: string
@@ -30,7 +39,7 @@ variables:
   <<: *retry
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == ""'
-  stage: scan
+  stage: $[[inputs.stage]]
   image: $TRIVY_IMAGE
   before_script:
   - apk add --no-cache jq
@@ -66,7 +75,7 @@ variables:
   <<: *retry
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"'
-  stage: scan
+  stage: $[[inputs.stage]]
   image: aquasec/trivy:latest
   before_script:
   - apk add --no-cache jq
