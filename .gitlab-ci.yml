@@ -12,6 +12,10 @@ spec:
     docker-image:
       description: "Docker image name"
       type: string
+    severity-exit1:
+      type: string
+      description: "Severity to exit code 1 on analysis"
+      default: ""
     architecture:
       description: "Architecture (amd64 or arm64)"
       type: string
@@ -22,7 +26,9 @@ stages:
 - scan
 
 variables:
-  TRIVY_JSON: "gl-container-scanning-report.json"
+  TRIVY_IMAGE_JSON: "sca-container-scanning-report.json"
+  TRIVY_FS_JSON: "sca-fs-scanning-report.json"
+  TRIVY_REPO_JSON: "sca-repo-scanning-report.json"
   TRIVY_IMAGE: public.ecr.aws/n6a9k4a7/deploy:1-trivy
 
 .retry: &retry
@@ -45,8 +51,13 @@ variables:
   - apk add --no-cache jq
   - apk add --no-cache docker
   script:
-  - trivy image "$[[inputs.docker-image]]"
-  - trivy image -f json "$[[inputs.docker-image]]" | tee $TRIVY_JSON > /dev/null | jq . > /dev/null
+  - trivy image -f json -o $TRIVY_IMAGE_JSON "$[[inputs.docker-image]]"
+  - trivy fs -f json -o $TRIVY_FS_JSON .
+  - trivy repo -f json -o $TRIVY_REPO_JSON ./
+  - |
+    if [ -n "$[[inputs.severity-exit1]]" ]; then
+      trivy image --severity "$[[inputs.severity-exit1]]" --exit-code 1 "$[[inputs.docker-image]]"
+    fi
   after_script:
   - |
     critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
@@ -63,7 +74,9 @@ variables:
     echo "TOTAL_COUNT=$total" >> variables.env
   artifacts:
     paths:
-    - $TRIVY_JSON
+    - $TRIVY_IMAGE_JSON
+    - $TRIVY_FS_JSON
+    - $TRIVY_REPO_JSON
     reports:
       dotenv: variables.env
     untracked: false
@@ -81,8 +94,13 @@ variables:
   - apk add --no-cache jq
   - apk add --no-cache docker
   script:
-  - trivy image "$[[inputs.docker-image]]"
-  - trivy image -f json "$[[inputs.docker-image]]" | tee $TRIVY_JSON > /dev/null | jq . > /dev/null
+  - trivy image -f json -o $TRIVY_IMAGE_JSON "$[[inputs.docker-image]]"
+  - trivy fs -f json -o $TRIVY_FS_JSON .
+  - trivy repo -f json -o $TRIVY_REPO_JSON ./
+  - |
+    if [ -n "$[[inputs.severity-exit1]]" ]; then
+      trivy image --severity "$[[inputs.severity-exit1]]" --exit-code 1 "$[[inputs.docker-image]]"
+    fi
   after_script:
   - |
     critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
@@ -99,7 +117,9 @@ variables:
     echo "TOTAL_COUNT=$total" >> variables.env
   artifacts:
     paths:
-    - $TRIVY_JSON
+    - $TRIVY_IMAGE_JSON
+    - $TRIVY_FS_JSON
+    - $TRIVY_REPO_JSON
     reports:
       dotenv: variables.env
     untracked: false
