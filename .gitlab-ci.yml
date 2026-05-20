@@ -20,15 +20,38 @@ spec:
       description: "Architecture (amd64 or arm64)"
       type: string
       default: ""
+    defectdojo-activated:
+      description: "Enable DefectDojo import"
+      type: boolean
+      default: false
+    defectdojo-url:
+      description: "DefectDojo base URL (e.g., https://defectdojo.example)"
+      type: string
+      default: ""
+    defectdojo-api-key:
+      description: "DefectDojo API key (recommended set as CI/CD variable)"
+      type: string
+      default: ""
+    defectdojo-engagement-id:
+      description: "DefectDojo engagement ID to import scans into"
+      type: string
+      default: ""
 ---
 
 stages:
 - scan
+- sca
 
 variables:
   TRIVY_IMAGE_JSON: "sca-container-scanning-report.json"
   TRIVY_FS_JSON: "sca-fs-scanning-report.json"
   TRIVY_REPO_JSON: "sca-repo-scanning-report.json"
+  TRIVY_IMAGE_LICENSE_JSON: "sca-container-license-report.json"
+  TRIVY_FS_LICENSE_JSON: "sca-fs-license-report.json"
+  TRIVY_REPO_LICENSE_JSON: "sca-repo-license-report.json"
+  TRIVY_IMAGE_SBOM_JSON: "sca-container-sbom.cyclonedx.json"
+  TRIVY_FS_SBOM_JSON: "sca-fs-sbom.cyclonedx.json"
+  TRIVY_REPO_SBOM_JSON: "sca-repo-sbom.cyclonedx.json"
   TRIVY_IMAGE: public.ecr.aws/n6a9k4a7/deploy:1-trivy
 
 .retry: &retry
@@ -50,10 +73,18 @@ variables:
   before_script:
   - apk add --no-cache jq
   - apk add --no-cache docker
+  - apk add --no-cache curl
+  - apk add --no-cache curl
   script:
   - trivy image -f json -o $TRIVY_IMAGE_JSON "$[[inputs.docker-image]]"
+  - trivy image --scanners license -f json -o $TRIVY_IMAGE_LICENSE_JSON "$[[inputs.docker-image]]"
+  - trivy image -f cyclonedx -o $TRIVY_IMAGE_SBOM_JSON "$[[inputs.docker-image]]"
   - trivy fs -f json -o $TRIVY_FS_JSON .
+  - trivy fs --scanners license -f json -o $TRIVY_FS_LICENSE_JSON .
+  - trivy fs -f cyclonedx -o $TRIVY_FS_SBOM_JSON .
   - trivy repo -f json -o $TRIVY_REPO_JSON ./
+  - trivy repo --scanners license -f json -o $TRIVY_REPO_LICENSE_JSON ./
+  - trivy repo -f cyclonedx -o $TRIVY_REPO_SBOM_JSON ./
   - |
     if [ -n "$[[inputs.severity-exit1]]" ]; then
       trivy image --severity "$[[inputs.severity-exit1]]" --exit-code 1 "$[[inputs.docker-image]]"
@@ -72,11 +103,36 @@ variables:
     echo "LOW_COUNT=$low" >> variables.env
     echo "UNKNOWN_COUNT=$unknown" >> variables.env
     echo "TOTAL_COUNT=$total" >> variables.env
+    # DefectDojo import (Trivy + SBOM) if configured
+    if [ "$[[ inputs.defectdojo-activated ]]" = "true" ] && [ -n "$[[ inputs.defectdojo-url ]]" ] && [ -n "$[[ inputs.defectdojo-api-key ]]" ] && [ -n "$[[ inputs.defectdojo-engagement-id ]]" ]; then
+      echo "Uploading reports to DefectDojo..."
+      DD_URL="$[[ inputs.defectdojo-url ]]/api/v2/import-scan/"
+      DD_TOKEN="$[[ inputs.defectdojo-api-key ]]"
+      ENG="$[[ inputs.defectdojo-engagement-id ]]"
+      for f in "$TRIVY_IMAGE_JSON" "$TRIVY_FS_JSON" "$TRIVY_REPO_JSON" "$TRIVY_IMAGE_LICENSE_JSON" "$TRIVY_FS_LICENSE_JSON" "$TRIVY_REPO_LICENSE_JSON"; do
+        if [ -f "$f" ]; then
+          echo "Uploading $f"
+          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=Trivy Scan" -F "engagement=$ENG" -F "close_old_findings=true" || true
+        fi
+      done
+      for f in "$TRIVY_IMAGE_SBOM_JSON" "$TRIVY_FS_SBOM_JSON" "$TRIVY_REPO_SBOM_JSON"; do
+        if [ -f "$f" ]; then
+          echo "Uploading SBOM $f"
+          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=CycloneDX" -F "engagement=$ENG" || true
+        fi
+      done
+    fi
   artifacts:
     paths:
     - $TRIVY_IMAGE_JSON
+    - $TRIVY_IMAGE_LICENSE_JSON
+    - $TRIVY_IMAGE_SBOM_JSON
     - $TRIVY_FS_JSON
+    - $TRIVY_FS_LICENSE_JSON
+    - $TRIVY_FS_SBOM_JSON
     - $TRIVY_REPO_JSON
+    - $TRIVY_REPO_LICENSE_JSON
+    - $TRIVY_REPO_SBOM_JSON
     reports:
       dotenv: variables.env
     untracked: false
@@ -95,8 +151,14 @@ variables:
   - apk add --no-cache docker
   script:
   - trivy image -f json -o $TRIVY_IMAGE_JSON "$[[inputs.docker-image]]"
+  - trivy image --scanners license -f json -o $TRIVY_IMAGE_LICENSE_JSON "$[[inputs.docker-image]]"
+  - trivy image -f cyclonedx -o $TRIVY_IMAGE_SBOM_JSON "$[[inputs.docker-image]]"
   - trivy fs -f json -o $TRIVY_FS_JSON .
+  - trivy fs --scanners license -f json -o $TRIVY_FS_LICENSE_JSON .
+  - trivy fs -f cyclonedx -o $TRIVY_FS_SBOM_JSON .
   - trivy repo -f json -o $TRIVY_REPO_JSON ./
+  - trivy repo --scanners license -f json -o $TRIVY_REPO_LICENSE_JSON ./
+  - trivy repo -f cyclonedx -o $TRIVY_REPO_SBOM_JSON ./
   - |
     if [ -n "$[[inputs.severity-exit1]]" ]; then
       trivy image --severity "$[[inputs.severity-exit1]]" --exit-code 1 "$[[inputs.docker-image]]"
@@ -115,11 +177,37 @@ variables:
     echo "LOW_COUNT=$low" >> variables.env
     echo "UNKNOWN_COUNT=$unknown" >> variables.env
     echo "TOTAL_COUNT=$total" >> variables.env
+    
+    # DefectDojo import (Trivy + SBOM) if configured
+    if [ "$[[ inputs.defectdojo-activated ]]" = "true" ] && [ -n "$[[ inputs.defectdojo-url ]]" ] && [ -n "$[[ inputs.defectdojo-api-key ]]" ] && [ -n "$[[ inputs.defectdojo-engagement-id ]]" ]; then
+      echo "Uploading reports to DefectDojo..."
+      DD_URL="$[[ inputs.defectdojo-url ]]/api/v2/import-scan/"
+      DD_TOKEN="$[[ inputs.defectdojo-api-key ]]"
+      ENG="$[[ inputs.defectdojo-engagement-id ]]"
+      for f in "$TRIVY_IMAGE_JSON" "$TRIVY_FS_JSON" "$TRIVY_REPO_JSON" "$TRIVY_IMAGE_LICENSE_JSON" "$TRIVY_FS_LICENSE_JSON" "$TRIVY_REPO_LICENSE_JSON"; do
+        if [ -f "$f" ]; then
+          echo "Uploading $f"
+          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=Trivy Scan" -F "engagement=$ENG" -F "close_old_findings=true" || true
+        fi
+      done
+      for f in "$TRIVY_IMAGE_SBOM_JSON" "$TRIVY_FS_SBOM_JSON" "$TRIVY_REPO_SBOM_JSON"; do
+        if [ -f "$f" ]; then
+          echo "Uploading SBOM $f"
+          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=CycloneDX" -F "engagement=$ENG" || true
+        fi
+      done
+    fi
   artifacts:
     paths:
     - $TRIVY_IMAGE_JSON
+    - $TRIVY_IMAGE_LICENSE_JSON
+    - $TRIVY_IMAGE_SBOM_JSON
     - $TRIVY_FS_JSON
+    - $TRIVY_FS_LICENSE_JSON
+    - $TRIVY_FS_SBOM_JSON
     - $TRIVY_REPO_JSON
+    - $TRIVY_REPO_LICENSE_JSON
+    - $TRIVY_REPO_SBOM_JSON
     reports:
       dotenv: variables.env
     untracked: false
