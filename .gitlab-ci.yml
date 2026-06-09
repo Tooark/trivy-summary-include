@@ -1,5 +1,6 @@
 spec:
   inputs:
+    # Trivy
     trivy-activated:
       description: "Activate Trivy scan"
       type: boolean
@@ -7,7 +8,7 @@ spec:
     stage:
       description: "Stage to run"
       type: string
-      #Modificar para sca(software composition analysis) futuramente com Sourcegraph
+      # Modificar para sca(software composition analysis) futuramente com Sourcegraph
       default: scan
     docker-image:
       description: "Docker image name"
@@ -20,8 +21,30 @@ spec:
       description: "Architecture (amd64 or arm64)"
       type: string
       default: ""
+    # Hadolint
+    hadolint-activated:
+      description: "Activate Hadolint Dockerfile lint"
+      type: boolean
+      default: true
+    hadolint-stage:
+      description: "Stage to run Hadolint"
+      type: string
+      default: sast
+    dockerfile:
+      description: "Path to the Dockerfile to lint"
+      type: string
+      default: "Dockerfile"
+    hadolint-fail-on-findings:
+      description: "If true, Hadolint job fails when issues are reported"
+      type: string
+      default: "false"
+    runner-tags:
+      description: "Runner tags for the Hadolint job (empty = any runner)"
+      type: string
+      default: ""
+    # DefectDojo
     defectdojo-activated:
-      description: "Enable DefectDojo import"
+      description: "Enable DefectDojo import (shared by Trivy and Hadolint)"
       type: boolean
       default: false
     defectdojo-url:
@@ -32,13 +55,22 @@ spec:
       description: "DefectDojo API key (recommended set as CI/CD variable)"
       type: string
       default: ""
+    defectdojo-product-name:
+      description: "DefectDojo product name (auto_create_context)"
+      type: string
+      default: ""
+    defectdojo-engagement-name:
+      description: "DefectDojo engagement name (auto_create_context)"
+      type: string
+      default: ""
     defectdojo-engagement-id:
-      description: "DefectDojo engagement ID to import scans into"
+      description: "DefectDojo engagement ID (fallback when names are not used)"
       type: string
       default: ""
 ---
 
 stages:
+- $[[ inputs.hadolint-stage ]]
 - scan
 - sca
 
@@ -53,166 +85,186 @@ variables:
   TRIVY_FS_SBOM_JSON: "sca-fs-sbom.cyclonedx.json"
   TRIVY_REPO_SBOM_JSON: "sca-repo-sbom.cyclonedx.json"
   TRIVY_IMAGE: public.ecr.aws/n6a9k4a7/deploy:1-trivy
+  HADOLINT_JSON: "hadolint-report.json"
+  DOCKERFILE: "$[[ inputs.dockerfile ]]"
+  HADOLINT_FAIL_ON_FINDINGS: "$[[ inputs.hadolint-fail-on-findings ]]"
+  DD_ACTIVATED: "$[[ inputs.defectdojo-activated ]]"
+  DD_URL: "$[[ inputs.defectdojo-url ]]"
+  DD_TOKEN: "$[[ inputs.defectdojo-api-key ]]"
+  DD_PRODUCT: "$[[ inputs.defectdojo-product-name ]]"
+  DD_ENGAGEMENT_NAME: "$[[ inputs.defectdojo-engagement-name ]]"
+  DD_ENGAGEMENT_ID: "$[[ inputs.defectdojo-engagement-id ]]"
+  SEVERITY_EXIT1: "$[[ inputs.severity-exit1 ]]"
+  DOCKER_IMAGE_REF: "$[[ inputs.docker-image ]]"
 
-.retry: &retry
+default:
   retry:
     max: 2
     when:
     - runner_system_failure
     - stuck_or_timeout_failure
+    - unknown_failure
     - api_failure
     - job_execution_timeout
-    - scheduler_failure
+
+# Shared library for DefectDojo reimport API calls, used by both Trivy and Hadolint jobs
+.defectdojo_lib:
+  script:
+  - |
+    dd_reimport() {
+      file="$1"; scan_type="$2"; test_title="$3"
+      [ -f "$file" ] || { echo "skip (no file): $file"; return 0; }
+      if [ "$DD_ACTIVATED" != "true" ] || [ -z "$DD_URL" ] || [ -z "$DD_TOKEN" ]; then
+        echo "DefectDojo desativado ou variaveis ausentes - pulando upload: $file"
+        return 0
+      fi
+      echo "Reimport -> DefectDojo: $file ($scan_type / $test_title)"
+      set -- -k -sS -X POST "$DD_URL/api/v2/reimport-scan/" \
+        -H "Authorization: Token $DD_TOKEN" \
+        -F "file=@$file" \
+        -F "scan_type=$scan_type" \
+        -F "test_title=$test_title" \
+        -F "close_old_findings=true" \
+        -F "active=true" \
+        -F "verified=false" \
+        -F "minimum_severity=Info"
+      if [ -n "$DD_ENGAGEMENT_ID" ]; then
+        set -- "$@" -F "engagement=$DD_ENGAGEMENT_ID"
+      else
+        set -- "$@" -F "auto_create_context=true" -F "product_name=$DD_PRODUCT" -F "engagement_name=$DD_ENGAGEMENT_NAME"
+      fi
+      code=$(curl "$@" -o /tmp/dd_resp.json -w "%{http_code}") || echo "curl failed: $file"
+      echo "HTTP $code"; head -c 500 /tmp/dd_resp.json 2>/dev/null; echo
+    }
+
+.trivy_script:
+  script:
+  - !reference [ .defectdojo_lib, script ]
+  - |
+    set -e
+
+    trivy image -f json      -o "$TRIVY_IMAGE_JSON"          "$DOCKER_IMAGE_REF"
+    trivy image --scanners license -f json -o "$TRIVY_IMAGE_LICENSE_JSON" "$DOCKER_IMAGE_REF"
+    trivy image -f cyclonedx -o "$TRIVY_IMAGE_SBOM_JSON"     "$DOCKER_IMAGE_REF"
+    trivy fs    -f json      -o "$TRIVY_FS_JSON"             .
+    trivy fs --scanners license -f json -o "$TRIVY_FS_LICENSE_JSON" .
+    trivy fs    -f cyclonedx -o "$TRIVY_FS_SBOM_JSON"        .
+    trivy repo  -f json      -o "$TRIVY_REPO_JSON"           ./
+    trivy repo --scanners license -f json -o "$TRIVY_REPO_LICENSE_JSON" ./
+    trivy repo  -f cyclonedx -o "$TRIVY_REPO_SBOM_JSON"      ./
+
+    sum_sev() {
+      sev="$1"; total=0
+      for f in "$TRIVY_IMAGE_JSON" "$TRIVY_FS_JSON" "$TRIVY_REPO_JSON"; do
+        [ -f "$f" ] || continue
+        n=$(jq "[.Results[]?.Vulnerabilities[]? | select(.Severity==\"$sev\")] | length" "$f" 2>/dev/null || echo 0)
+        total=$((total + n))
+      done
+      echo "$total"
+    }
+    critical=$(sum_sev CRITICAL); high=$(sum_sev HIGH); medium=$(sum_sev MEDIUM)
+    low=$(sum_sev LOW); unknown=$(sum_sev UNKNOWN)
+    total=$((critical + high + medium + low + unknown))
+    {
+      echo "CRITICAL_COUNT=$critical"
+      echo "HIGH_COUNT=$high"
+      echo "MEDIUM_COUNT=$medium"
+      echo "LOW_COUNT=$low"
+      echo "UNKNOWN_COUNT=$unknown"
+      echo "TOTAL_COUNT=$total"
+    } >> variables.env
+    echo "Trivy summary: C=$critical H=$high M=$medium L=$low U=$unknown T=$total"
+
+    dd_reimport "$TRIVY_IMAGE_JSON"         "Trivy Scan"     "Trivy - container vulns"
+    dd_reimport "$TRIVY_FS_JSON"            "Trivy Scan"     "Trivy - filesystem vulns"
+    dd_reimport "$TRIVY_REPO_JSON"          "Trivy Scan"     "Trivy - repo vulns"
+    dd_reimport "$TRIVY_IMAGE_LICENSE_JSON" "Trivy Scan"     "Trivy - container licenses"
+    dd_reimport "$TRIVY_FS_LICENSE_JSON"    "Trivy Scan"     "Trivy - filesystem licenses"
+    dd_reimport "$TRIVY_REPO_LICENSE_JSON"  "Trivy Scan"     "Trivy - repo licenses"
+    dd_reimport "$TRIVY_IMAGE_SBOM_JSON"    "CycloneDX Scan" "Trivy - container SBOM"
+    dd_reimport "$TRIVY_FS_SBOM_JSON"       "CycloneDX Scan" "Trivy - filesystem SBOM"
+    dd_reimport "$TRIVY_REPO_SBOM_JSON"     "CycloneDX Scan" "Trivy - repo SBOM"
+
+    if [ -n "$SEVERITY_EXIT1" ]; then
+      trivy image --severity "$SEVERITY_EXIT1" --exit-code 1 "$DOCKER_IMAGE_REF"
+    fi
+
+.trivy_artifacts:
+  artifacts:
+    paths:
+    - $TRIVY_IMAGE_JSON
+    - $TRIVY_IMAGE_LICENSE_JSON
+    - $TRIVY_IMAGE_SBOM_JSON
+    - $TRIVY_FS_JSON
+    - $TRIVY_FS_LICENSE_JSON
+    - $TRIVY_FS_SBOM_JSON
+    - $TRIVY_REPO_JSON
+    - $TRIVY_REPO_LICENSE_JSON
+    - $TRIVY_REPO_SBOM_JSON
+    - variables.env
+    reports:
+      dotenv: variables.env
+    untracked: false
+    when: on_success
+    access: developer
+    expire_in: "1 day"
 
 .docker_scan:
-  <<: *retry
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == "" || "$[[ inputs.trivy-activated ]]" == "true"'
   stage: $[[inputs.stage]]
   image: $TRIVY_IMAGE
   before_script:
-  - apk add --no-cache jq
-  - apk add --no-cache docker
-  - apk add --no-cache curl
-  - apk add --no-cache curl
+  - apk add --no-cache jq docker curl
   script:
-  - trivy image -f json -o $TRIVY_IMAGE_JSON "$[[inputs.docker-image]]"
-  - trivy image --scanners license -f json -o $TRIVY_IMAGE_LICENSE_JSON "$[[inputs.docker-image]]"
-  - trivy image -f cyclonedx -o $TRIVY_IMAGE_SBOM_JSON "$[[inputs.docker-image]]"
-  - trivy fs -f json -o $TRIVY_FS_JSON .
-  - trivy fs --scanners license -f json -o $TRIVY_FS_LICENSE_JSON .
-  - trivy fs -f cyclonedx -o $TRIVY_FS_SBOM_JSON .
-  - trivy repo -f json -o $TRIVY_REPO_JSON ./
-  - trivy repo --scanners license -f json -o $TRIVY_REPO_LICENSE_JSON ./
-  - trivy repo -f cyclonedx -o $TRIVY_REPO_SBOM_JSON ./
-  - |
-    if [ -n "$[[inputs.severity-exit1]]" ]; then
-      trivy image --severity "$[[inputs.severity-exit1]]" --exit-code 1 "$[[inputs.docker-image]]"
-    fi
-  after_script:
-  - |
-    critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
-    high=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")] | length' $TRIVY_JSON)
-    medium=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' $TRIVY_JSON)
-    low=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="LOW")] | length' $TRIVY_JSON)
-    unknown=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="UNKNOWN")] | length' $TRIVY_JSON)
-    total=$((critical + high + medium + low + unknown))
-    echo "CRITICAL_COUNT=$critical" >> variables.env
-    echo "HIGH_COUNT=$high" >> variables.env
-    echo "MEDIUM_COUNT=$medium" >> variables.env
-    echo "LOW_COUNT=$low" >> variables.env
-    echo "UNKNOWN_COUNT=$unknown" >> variables.env
-    echo "TOTAL_COUNT=$total" >> variables.env
-    # DefectDojo import (Trivy + SBOM) if configured
-    if [ "$[[ inputs.defectdojo-activated ]]" = "true" ] && [ -n "$[[ inputs.defectdojo-url ]]" ] && [ -n "$[[ inputs.defectdojo-api-key ]]" ] && [ -n "$[[ inputs.defectdojo-engagement-id ]]" ]; then
-      echo "Uploading reports to DefectDojo..."
-      DD_URL="$[[ inputs.defectdojo-url ]]/api/v2/import-scan/"
-      DD_TOKEN="$[[ inputs.defectdojo-api-key ]]"
-      ENG="$[[ inputs.defectdojo-engagement-id ]]"
-      for f in "$TRIVY_IMAGE_JSON" "$TRIVY_FS_JSON" "$TRIVY_REPO_JSON" "$TRIVY_IMAGE_LICENSE_JSON" "$TRIVY_FS_LICENSE_JSON" "$TRIVY_REPO_LICENSE_JSON"; do
-        if [ -f "$f" ]; then
-          echo "Uploading $f"
-          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=Trivy Scan" -F "engagement=$ENG" -F "close_old_findings=true" || true
-        fi
-      done
-      for f in "$TRIVY_IMAGE_SBOM_JSON" "$TRIVY_FS_SBOM_JSON" "$TRIVY_REPO_SBOM_JSON"; do
-        if [ -f "$f" ]; then
-          echo "Uploading SBOM $f"
-          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=CycloneDX" -F "engagement=$ENG" || true
-        fi
-      done
-    fi
-  artifacts:
-    paths:
-    - $TRIVY_IMAGE_JSON
-    - $TRIVY_IMAGE_LICENSE_JSON
-    - $TRIVY_IMAGE_SBOM_JSON
-    - $TRIVY_FS_JSON
-    - $TRIVY_FS_LICENSE_JSON
-    - $TRIVY_FS_SBOM_JSON
-    - $TRIVY_REPO_JSON
-    - $TRIVY_REPO_LICENSE_JSON
-    - $TRIVY_REPO_SBOM_JSON
-    reports:
-      dotenv: variables.env
-    untracked: false
-    when: on_success
-    access: developer
-    expire_in: "1 day"
+  - !reference [ .trivy_script, script ]
+  artifacts: !reference [ .trivy_artifacts, artifacts ]
 
 .docker_scan_amd64:
-  <<: *retry
   rules:
-  - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64"  || "$[[ inputs.trivy-activated ]]" == "true"'
+  - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64" || "$[[ inputs.trivy-activated ]]" == "true"'
   stage: $[[inputs.stage]]
   image: aquasec/trivy:latest
   before_script:
-  - apk add --no-cache jq
-  - apk add --no-cache docker
+  - apk add --no-cache jq docker curl
   script:
-  - trivy image -f json -o $TRIVY_IMAGE_JSON "$[[inputs.docker-image]]"
-  - trivy image --scanners license -f json -o $TRIVY_IMAGE_LICENSE_JSON "$[[inputs.docker-image]]"
-  - trivy image -f cyclonedx -o $TRIVY_IMAGE_SBOM_JSON "$[[inputs.docker-image]]"
-  - trivy fs -f json -o $TRIVY_FS_JSON .
-  - trivy fs --scanners license -f json -o $TRIVY_FS_LICENSE_JSON .
-  - trivy fs -f cyclonedx -o $TRIVY_FS_SBOM_JSON .
-  - trivy repo -f json -o $TRIVY_REPO_JSON ./
-  - trivy repo --scanners license -f json -o $TRIVY_REPO_LICENSE_JSON ./
-  - trivy repo -f cyclonedx -o $TRIVY_REPO_SBOM_JSON ./
-  - |
-    if [ -n "$[[inputs.severity-exit1]]" ]; then
-      trivy image --severity "$[[inputs.severity-exit1]]" --exit-code 1 "$[[inputs.docker-image]]"
-    fi
-  after_script:
-  - |
-    critical=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' $TRIVY_JSON)
-    high=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")] | length' $TRIVY_JSON)
-    medium=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' $TRIVY_JSON)
-    low=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="LOW")] | length' $TRIVY_JSON)
-    unknown=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="UNKNOWN")] | length' $TRIVY_JSON)
-    total=$((critical + high + medium + low + unknown))
-    echo "CRITICAL_COUNT=$critical" >> variables.env
-    echo "HIGH_COUNT=$high" >> variables.env
-    echo "MEDIUM_COUNT=$medium" >> variables.env
-    echo "LOW_COUNT=$low" >> variables.env
-    echo "UNKNOWN_COUNT=$unknown" >> variables.env
-    echo "TOTAL_COUNT=$total" >> variables.env
-    
-    # DefectDojo import (Trivy + SBOM) if configured
-    if [ "$[[ inputs.defectdojo-activated ]]" = "true" ] && [ -n "$[[ inputs.defectdojo-url ]]" ] && [ -n "$[[ inputs.defectdojo-api-key ]]" ] && [ -n "$[[ inputs.defectdojo-engagement-id ]]" ]; then
-      echo "Uploading reports to DefectDojo..."
-      DD_URL="$[[ inputs.defectdojo-url ]]/api/v2/import-scan/"
-      DD_TOKEN="$[[ inputs.defectdojo-api-key ]]"
-      ENG="$[[ inputs.defectdojo-engagement-id ]]"
-      for f in "$TRIVY_IMAGE_JSON" "$TRIVY_FS_JSON" "$TRIVY_REPO_JSON" "$TRIVY_IMAGE_LICENSE_JSON" "$TRIVY_FS_LICENSE_JSON" "$TRIVY_REPO_LICENSE_JSON"; do
-        if [ -f "$f" ]; then
-          echo "Uploading $f"
-          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=Trivy Scan" -F "engagement=$ENG" -F "close_old_findings=true" || true
-        fi
-      done
-      for f in "$TRIVY_IMAGE_SBOM_JSON" "$TRIVY_FS_SBOM_JSON" "$TRIVY_REPO_SBOM_JSON"; do
-        if [ -f "$f" ]; then
-          echo "Uploading SBOM $f"
-          curl -sS -X POST "$DD_URL" -H "Authorization: Token $DD_TOKEN" -F "file=@$f" -F "scan_type=CycloneDX" -F "engagement=$ENG" || true
-        fi
-      done
-    fi
-  artifacts:
-    paths:
-    - $TRIVY_IMAGE_JSON
-    - $TRIVY_IMAGE_LICENSE_JSON
-    - $TRIVY_IMAGE_SBOM_JSON
-    - $TRIVY_FS_JSON
-    - $TRIVY_FS_LICENSE_JSON
-    - $TRIVY_FS_SBOM_JSON
-    - $TRIVY_REPO_JSON
-    - $TRIVY_REPO_LICENSE_JSON
-    - $TRIVY_REPO_SBOM_JSON
-    reports:
-      dotenv: variables.env
-    untracked: false
-    when: on_success
-    access: developer
-    expire_in: "1 day"
+  - !reference [ .trivy_script, script ]
+  artifacts: !reference [ .trivy_artifacts, artifacts ]
   tags:
   - amd64
+
+hadolint:
+  rules:
+  - if: '"$[[ inputs.hadolint-activated ]]" == "true"'
+  stage: $[[ inputs.hadolint-stage ]]
+  image:
+    name: hadolint/hadolint:latest-alpine
+    entrypoint: [ "" ]
+  before_script:
+  - apk add --no-cache curl jq
+  script:
+  - !reference [ .defectdojo_lib, script ]
+  - |
+    if [ ! -f "$DOCKERFILE" ]; then
+      echo "Dockerfile nao encontrado em: $DOCKERFILE" && exit 1
+    fi
+    # hadolint exits non-zero when it finds issues; capture output regardless.
+    hadolint -f json "$DOCKERFILE" > "$HADOLINT_JSON" || true
+    echo "Hadolint findings:"; jq 'length' "$HADOLINT_JSON" 2>/dev/null || echo "?"
+
+    dd_reimport "$HADOLINT_JSON" "Hadolint Dockerfile check" "Hadolint - Dockerfile"
+
+    if [ "$HADOLINT_FAIL_ON_FINDINGS" = "true" ]; then
+      N=$(jq 'length' "$HADOLINT_JSON" 2>/dev/null || echo 0)
+      if [ "${N:-0}" -gt 0 ]; then
+        echo "Hadolint encontrou $N problema(s) e hadolint-fail-on-findings=true" && exit 1
+      fi
+    fi
+  artifacts:
+    when: always
+    paths:
+    - $HADOLINT_JSON
+    expire_in: 7 days
+  allow_failure: true
+  tags:
+  - $[[ inputs.runner-tags ]]
