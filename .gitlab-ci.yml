@@ -9,7 +9,7 @@ spec:
       description: "Stage to run"
       type: string
       # Modificar para sca(software composition analysis) futuramente com Sourcegraph
-      default: scan
+      default: sca
     docker-image:
       description: "Docker image name"
       type: string
@@ -213,6 +213,9 @@ default:
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == "" || "$[[ inputs.trivy-activated ]]" == "true"'
   stage: $[[inputs.stage]]
+  needs:
+  - job: hadolint
+    optional: true
   image: $TRIVY_IMAGE
   before_script:
   - apk add --no-cache jq docker curl
@@ -224,6 +227,9 @@ default:
   rules:
   - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64" || "$[[ inputs.trivy-activated ]]" == "true"'
   stage: $[[inputs.stage]]
+  needs:
+  - job: hadolint
+    optional: true
   image: aquasec/trivy:latest
   before_script:
   - apk add --no-cache jq docker curl
