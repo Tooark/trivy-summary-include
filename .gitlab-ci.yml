@@ -9,7 +9,7 @@ spec:
       description: "Stage to run"
       type: string
       # Modificar para sca(software composition analysis) futuramente com Sourcegraph
-      default: sca
+      default: scan
     docker-image:
       description: "Docker image name"
       type: string
