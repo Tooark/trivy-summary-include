@@ -241,7 +241,7 @@ default:
     echo "Trivy summary: C=$critical H=$high M=$medium L=$low U=$unknown T=$total"
 
     # Send only container vulnerability report to DefectDojo.
-    dd_reimport "$TRIVY_IMAGE_JSON" "Trivy Scan" "Trivy - container vulns" "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_IMAGE_JSON" "Trivy Scan" "SCA" "$DD_TRIVY_PRODUCT_TYPE"
 
     if [ -n "$SEVERITY_EXIT1" ]; then
       trivy image --severity "$SEVERITY_EXIT1" --exit-code 1 "$DOCKER_IMAGE_REF"
