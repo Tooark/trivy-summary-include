@@ -38,10 +38,6 @@ spec:
       description: "If true, Hadolint job fails when issues are reported"
       type: string
       default: "false"
-    runner-tags:
-      description: "Runner tags for the Hadolint job (empty = any runner)"
-      type: string
-      default: ""
     # DefectDojo
     defectdojo-activated:
       description: "Enable DefectDojo import (shared by Trivy and Hadolint)"
@@ -152,6 +148,23 @@ default:
     trivy repo  -f json      -o "$TRIVY_REPO_JSON"           ./
     trivy repo --scanners license -f json -o "$TRIVY_REPO_LICENSE_JSON" ./
     trivy repo  -f cyclonedx -o "$TRIVY_REPO_SBOM_JSON"      ./
+
+    trivy_table_from_json() {
+      in_json="$1"; title="$2"
+      [ -f "$in_json" ] || { echo "skip table (no file): $in_json"; return 0; }
+
+      # Reuse JSON results to avoid running a second vulnerability scan.
+      echo "===== $title (table) ====="
+      if trivy convert --format table "$in_json"; then
+        true
+      else
+        echo "Trivy convert nao disponivel para: $in_json (seguindo sem tabela)"
+      fi
+    }
+
+    trivy_table_from_json "$TRIVY_IMAGE_JSON" "Trivy container vulnerabilities"
+    trivy_table_from_json "$TRIVY_FS_JSON"    "Trivy filesystem vulnerabilities"
+    trivy_table_from_json "$TRIVY_REPO_JSON"  "Trivy repository vulnerabilities"
 
     sum_sev() {
       sev="$1"; total=0
@@ -272,5 +285,3 @@ hadolint:
     - $HADOLINT_JSON
     expire_in: 7 days
   allow_failure: true
-  tags:
-  - $[[ inputs.runner-tags ]]
