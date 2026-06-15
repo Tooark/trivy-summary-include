@@ -59,6 +59,18 @@ spec:
       description: "DefectDojo engagement name (auto_create_context)"
       type: string
       default: ""
+    defectdojo-product-type-name:
+      description: "DefectDojo product type name (used to create product on first run)"
+      type: string
+      default: ""
+    defectdojo-trivy-product-type-name:
+      description: "DefectDojo product type name for Trivy uploads (optional override)"
+      type: string
+      default: "Trivy Scan"
+    defectdojo-hadolint-product-type-name:
+      description: "DefectDojo product type name for Hadolint uploads (optional override)"
+      type: string
+      default: "Hadolint Dockerfile check"
     defectdojo-engagement-id:
       description: "DefectDojo engagement ID (fallback when names are not used)"
       type: string
@@ -89,6 +101,9 @@ variables:
   DD_TOKEN: "$[[ inputs.defectdojo-api-key ]]"
   DD_PRODUCT: "$[[ inputs.defectdojo-product-name ]]"
   DD_ENGAGEMENT_NAME: "$[[ inputs.defectdojo-engagement-name ]]"
+  DD_PRODUCT_TYPE: "$[[ inputs.defectdojo-product-type-name ]]"
+  DD_TRIVY_PRODUCT_TYPE: "$[[ inputs.defectdojo-trivy-product-type-name ]]"
+  DD_HADOLINT_PRODUCT_TYPE: "$[[ inputs.defectdojo-hadolint-product-type-name ]]"
   DD_ENGAGEMENT_ID: "$[[ inputs.defectdojo-engagement-id ]]"
   SEVERITY_EXIT1: "$[[ inputs.severity-exit1 ]]"
   DOCKER_IMAGE_REF: "$[[ inputs.docker-image ]]"
@@ -108,12 +123,32 @@ default:
   script:
   - |
     dd_reimport() {
-      file="$1"; scan_type="$2"; test_title="$3"
+      file="$1"; scan_type="$2"; test_title="$3"; job_product_type="$4"
       [ -f "$file" ] || { echo "skip (no file): $file"; return 0; }
       if [ "$DD_ACTIVATED" != "true" ] || [ -z "$DD_URL" ] || [ -z "$DD_TOKEN" ]; then
         echo "DefectDojo desativado ou variaveis ausentes - pulando upload: $file"
         return 0
       fi
+      if [ -z "$DD_PRODUCT" ] && [ -z "$DD_ENGAGEMENT_ID" ]; then
+        echo "ERROR: DD_PRODUCT (or DD_ENGAGEMENT_ID) is required when DefectDojo is activated"
+        return 1
+      fi
+
+      # Backward compatible fallback: job-specific value -> global value.
+      [ -n "$job_product_type" ] || job_product_type="$DD_PRODUCT_TYPE"
+
+      # If we are creating context by product/engagement names, check if product exists.
+      PRODUCT_EXISTS=true
+      if [ -z "$DD_ENGAGEMENT_ID" ] && [ -n "$DD_PRODUCT" ]; then
+        PRODUCT_QUERY=$(jq -rn --arg value "$DD_PRODUCT" '$value|@uri')
+        PRODUCT_LOOKUP_URL="$DD_URL/api/v2/products/?name=$PRODUCT_QUERY"
+        PRODUCT_RESPONSE=$(curl -k -sS -H "Authorization: Token $DD_TOKEN" "$PRODUCT_LOOKUP_URL") || {
+          echo "ERROR: product lookup failed for '$DD_PRODUCT'"
+          return 1
+        }
+        PRODUCT_EXISTS=$(printf '%s' "$PRODUCT_RESPONSE" | jq -r --arg name "$DD_PRODUCT" 'any(.results[]?; .name == $name)')
+      fi
+
       echo "Reimport -> DefectDojo: $file ($scan_type / $test_title)"
       set -- -k -sS -X POST "$DD_URL/api/v2/reimport-scan/" \
         -H "Authorization: Token $DD_TOKEN" \
@@ -127,10 +162,27 @@ default:
       if [ -n "$DD_ENGAGEMENT_ID" ]; then
         set -- "$@" -F "engagement=$DD_ENGAGEMENT_ID"
       else
-        set -- "$@" -F "auto_create_context=true" -F "product_name=$DD_PRODUCT" -F "engagement_name=$DD_ENGAGEMENT_NAME"
+        set -- "$@" \
+          -F "auto_create_context=true" \
+          -F "product_name=$DD_PRODUCT" \
+          -F "engagement_name=${DD_ENGAGEMENT_NAME:-CI/CD}"
+        if [ "$PRODUCT_EXISTS" != "true" ]; then
+          if [ -z "$job_product_type" ]; then
+            echo "ERROR: product_type_name is required to create product '$DD_PRODUCT'"
+            return 1
+          fi
+          set -- "$@" -F "product_type_name=$job_product_type"
+        fi
       fi
-      code=$(curl "$@" -o /tmp/dd_resp.json -w "%{http_code}") || echo "curl failed: $file"
+      code=$(curl "$@" -o /tmp/dd_resp.json -w "%{http_code}") || {
+        echo "curl failed: $file"
+        return 1
+      }
       echo "HTTP $code"; head -c 500 /tmp/dd_resp.json 2>/dev/null; echo
+      case "$code" in
+        2*) ;;
+        *) echo "ERROR: DefectDojo reimport failed (HTTP $code)"; return 1 ;;
+      esac
     }
 
 .trivy_script:
@@ -188,15 +240,15 @@ default:
     } >> variables.env
     echo "Trivy summary: C=$critical H=$high M=$medium L=$low U=$unknown T=$total"
 
-    dd_reimport "$TRIVY_IMAGE_JSON"         "Trivy Scan"     "Trivy - container vulns"
-    dd_reimport "$TRIVY_FS_JSON"            "Trivy Scan"     "Trivy - filesystem vulns"
-    dd_reimport "$TRIVY_REPO_JSON"          "Trivy Scan"     "Trivy - repo vulns"
-    dd_reimport "$TRIVY_IMAGE_LICENSE_JSON" "Trivy Scan"     "Trivy - container licenses"
-    dd_reimport "$TRIVY_FS_LICENSE_JSON"    "Trivy Scan"     "Trivy - filesystem licenses"
-    dd_reimport "$TRIVY_REPO_LICENSE_JSON"  "Trivy Scan"     "Trivy - repo licenses"
-    dd_reimport "$TRIVY_IMAGE_SBOM_JSON"    "CycloneDX Scan" "Trivy - container SBOM"
-    dd_reimport "$TRIVY_FS_SBOM_JSON"       "CycloneDX Scan" "Trivy - filesystem SBOM"
-    dd_reimport "$TRIVY_REPO_SBOM_JSON"     "CycloneDX Scan" "Trivy - repo SBOM"
+    dd_reimport "$TRIVY_IMAGE_JSON"         "Trivy Scan"     "Trivy - container vulns"    "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_FS_JSON"            "Trivy Scan"     "Trivy - filesystem vulns"   "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_REPO_JSON"          "Trivy Scan"     "Trivy - repo vulns"         "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_IMAGE_LICENSE_JSON" "Trivy Scan"     "Trivy - container licenses" "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_FS_LICENSE_JSON"    "Trivy Scan"     "Trivy - filesystem licenses" "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_REPO_LICENSE_JSON"  "Trivy Scan"     "Trivy - repo licenses"      "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_IMAGE_SBOM_JSON"    "CycloneDX Scan" "Trivy - container SBOM"     "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_FS_SBOM_JSON"       "CycloneDX Scan" "Trivy - filesystem SBOM"    "$DD_TRIVY_PRODUCT_TYPE"
+    dd_reimport "$TRIVY_REPO_SBOM_JSON"     "CycloneDX Scan" "Trivy - repo SBOM"          "$DD_TRIVY_PRODUCT_TYPE"
 
     if [ -n "$SEVERITY_EXIT1" ]; then
       trivy image --severity "$SEVERITY_EXIT1" --exit-code 1 "$DOCKER_IMAGE_REF"
@@ -271,7 +323,7 @@ hadolint:
     hadolint -f json "$DOCKERFILE" > "$HADOLINT_JSON" || true
     echo "Hadolint findings:"; jq 'length' "$HADOLINT_JSON" 2>/dev/null || echo "?"
 
-    dd_reimport "$HADOLINT_JSON" "Hadolint Dockerfile check" "Hadolint - Dockerfile"
+    dd_reimport "$HADOLINT_JSON" "Hadolint Dockerfile check" "Hadolint - Dockerfile" "$DD_HADOLINT_PRODUCT_TYPE"
 
     if [ "$HADOLINT_FAIL_ON_FINDINGS" = "true" ]; then
       N=$(jq 'length' "$HADOLINT_JSON" 2>/dev/null || echo 0)
