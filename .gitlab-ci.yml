@@ -240,15 +240,8 @@ default:
     } >> variables.env
     echo "Trivy summary: C=$critical H=$high M=$medium L=$low U=$unknown T=$total"
 
-    dd_reimport "$TRIVY_IMAGE_JSON"         "Trivy Scan"     "Trivy - container vulns"    "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_FS_JSON"            "Trivy Scan"     "Trivy - filesystem vulns"   "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_REPO_JSON"          "Trivy Scan"     "Trivy - repo vulns"         "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_IMAGE_LICENSE_JSON" "Trivy Scan"     "Trivy - container licenses" "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_FS_LICENSE_JSON"    "Trivy Scan"     "Trivy - filesystem licenses" "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_REPO_LICENSE_JSON"  "Trivy Scan"     "Trivy - repo licenses"      "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_IMAGE_SBOM_JSON"    "CycloneDX Scan" "Trivy - container SBOM"     "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_FS_SBOM_JSON"       "CycloneDX Scan" "Trivy - filesystem SBOM"    "$DD_TRIVY_PRODUCT_TYPE"
-    dd_reimport "$TRIVY_REPO_SBOM_JSON"     "CycloneDX Scan" "Trivy - repo SBOM"          "$DD_TRIVY_PRODUCT_TYPE"
+    # Send only container vulnerability report to DefectDojo.
+    dd_reimport "$TRIVY_IMAGE_JSON" "Trivy Scan" "Trivy - container vulns" "$DD_TRIVY_PRODUCT_TYPE"
 
     if [ -n "$SEVERITY_EXIT1" ]; then
       trivy image --severity "$SEVERITY_EXIT1" --exit-code 1 "$DOCKER_IMAGE_REF"
@@ -323,7 +316,7 @@ hadolint:
     hadolint -f json "$DOCKERFILE" > "$HADOLINT_JSON" || true
     echo "Hadolint findings:"; jq 'length' "$HADOLINT_JSON" 2>/dev/null || echo "?"
 
-    dd_reimport "$HADOLINT_JSON" "Hadolint Dockerfile check" "Hadolint - Dockerfile" "$DD_HADOLINT_PRODUCT_TYPE"
+    dd_reimport "$HADOLINT_JSON" "Hadolint Dockerfile check" "SAST" "$DD_HADOLINT_PRODUCT_TYPE"
 
     if [ "$HADOLINT_FAIL_ON_FINDINGS" = "true" ]; then
       N=$(jq 'length' "$HADOLINT_JSON" 2>/dev/null || echo 0)
