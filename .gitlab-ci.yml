@@ -13,6 +13,7 @@ spec:
     docker-image:
       description: "Docker image name"
       type: string
+      default: ""
     severity-exit1:
       type: string
       description: "Severity to exit code 1 on analysis"
@@ -191,9 +192,14 @@ default:
   - |
     set -e
 
-    trivy image -f json      -o "$TRIVY_IMAGE_JSON"          "$DOCKER_IMAGE_REF"
-    trivy image --scanners license -f json -o "$TRIVY_IMAGE_LICENSE_JSON" "$DOCKER_IMAGE_REF"
-    trivy image -f cyclonedx -o "$TRIVY_IMAGE_SBOM_JSON"     "$DOCKER_IMAGE_REF"
+    if [ -n "$DOCKER_IMAGE_REF" ]; then
+      echo "Imagem informada: $DOCKER_IMAGE_REF - executando scan de container (image)"
+      trivy image -f json      -o "$TRIVY_IMAGE_JSON"          "$DOCKER_IMAGE_REF"
+      trivy image --scanners license -f json -o "$TRIVY_IMAGE_LICENSE_JSON" "$DOCKER_IMAGE_REF"
+      trivy image -f cyclonedx -o "$TRIVY_IMAGE_SBOM_JSON"     "$DOCKER_IMAGE_REF"
+    else
+      echo "Nenhuma imagem informada (docker-image vazio) - pulando scan de container; fs e repo seguem normalmente"
+    fi
     trivy fs    -f json      -o "$TRIVY_FS_JSON"             .
     trivy fs --scanners license -f json -o "$TRIVY_FS_LICENSE_JSON" .
     trivy fs    -f cyclonedx -o "$TRIVY_FS_SBOM_JSON"        .
@@ -240,10 +246,12 @@ default:
     } >> variables.env
     echo "Trivy summary: C=$critical H=$high M=$medium L=$low U=$unknown T=$total"
 
-    # Send only container vulnerability report to DefectDojo.
-    dd_reimport "$TRIVY_IMAGE_JSON" "Trivy Scan" "SCA" "$DD_TRIVY_PRODUCT_TYPE"
+    # Send only container vulnerability report to DefectDojo (only when an image was scanned).
+    if [ -n "$DOCKER_IMAGE_REF" ]; then
+      dd_reimport "$TRIVY_IMAGE_JSON" "Trivy Scan" "SCA" "$DD_TRIVY_PRODUCT_TYPE"
+    fi
 
-    if [ -n "$SEVERITY_EXIT1" ]; then
+    if [ -n "$SEVERITY_EXIT1" ] && [ -n "$DOCKER_IMAGE_REF" ]; then
       trivy image --severity "$SEVERITY_EXIT1" --exit-code 1 "$DOCKER_IMAGE_REF"
     fi
 
