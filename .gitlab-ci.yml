@@ -21,7 +21,7 @@ spec:
     architecture:
       description: "Architecture (amd64 or arm64)"
       type: string
-      default: ""
+      default: "amd64"
     # Hadolint
     hadolint-activated:
       description: "Activate Hadolint Dockerfile lint"
@@ -277,11 +277,8 @@ default:
 
 .docker_scan:
   rules:
-  - if: '"$[[ inputs.architecture | expand_vars ]]" == "" || "$[[ inputs.trivy-activated ]]" == "true"'
+  - if: '"$[[ inputs.trivy-activated ]]" == "true" && ("$[[ inputs.architecture | expand_vars ]]" == "" || "$[[ inputs.architecture | expand_vars ]]" == "arm64")'
   stage: $[[inputs.stage]]
-  needs:
-  - job: hadolint
-    optional: true
   image: $TRIVY_IMAGE
   before_script:
   - apk add --no-cache jq docker curl
@@ -291,11 +288,8 @@ default:
 
 .docker_scan_amd64:
   rules:
-  - if: '"$[[ inputs.architecture | expand_vars ]]" == "amd64" || "$[[ inputs.trivy-activated ]]" == "true"'
+  - if: '"$[[ inputs.trivy-activated ]]" == "true" && "$[[ inputs.architecture | expand_vars ]]" == "amd64"'
   stage: $[[inputs.stage]]
-  needs:
-  - job: hadolint
-    optional: true
   image: aquasec/trivy:latest
   before_script:
   - apk add --no-cache jq docker curl
